@@ -30,7 +30,7 @@ type Phrase struct {
 
 type Note struct {
 	Title   string
-	Results []Phrase
+	Results []*Phrase
 }
 
 func main() {
@@ -54,7 +54,7 @@ func main() {
 		response := Recognize(gsURI, speechContext)
 		note := CreateNote(response, title)
 		notes = append(notes, note)
-		speechContext = CompareNotes(notes, .90)
+		speechContext = CompareNotes(notes, .93)
 	}
 
 	for _, v := range notes {
@@ -66,7 +66,7 @@ func CreateNote(response *speechpb.LongRunningRecognizeResponse, title string) *
 
 	note := &Note{
 		Title:   title,
-		Results: []Phrase{},
+		Results: []*Phrase{},
 	}
 
 	for _, result := range response.GetResults() {
@@ -82,7 +82,7 @@ func CreateNote(response *speechpb.LongRunningRecognizeResponse, title string) *
 			return mostConfidentAlternative.Words[i].StartTime.Seconds < mostConfidentAlternative.Words[j].StartTime.Seconds
 		})
 
-		note.Results = append(note.Results, Phrase{
+		note.Results = append(note.Results, &Phrase{
 			Transcript: mostConfidentAlternative.Transcript,
 			Time:       mostConfidentAlternative.Words[0].GetStartTime().AsDuration().Seconds(),
 			Confidence: float64(mostConfidentAlternative.Confidence),
@@ -96,9 +96,11 @@ func CreateNote(response *speechpb.LongRunningRecognizeResponse, title string) *
 	})
 
 	for _, phrase := range note.Results {
+		phrase.SoundexMap = make(map[string]*speechpb.WordInfo, 0)
 		for _, word := range phrase.Words {
 			phrase.SoundexMap[soundex.Code(word.GetWord())] = word
 		}
+		log.Printf("%v\v", phrase.SoundexMap)
 	}
 
 	return note
@@ -130,8 +132,8 @@ func CompareNotes(notes []*Note, threshold float64) *speechpb.SpeechContext {
 	defer log.Printf("Done!\n\n----------------------\n\n")
 
 	speechContext := &speechpb.SpeechContext{Phrases: []string{}}
-	notConfident := []Phrase{}
-	confident := []Phrase{}
+	notConfident := []*Phrase{}
+	confident := []*Phrase{}
 	for _, note := range notes {
 		for _, phrase := range note.Results {
 			if phrase.Confidence < threshold {
@@ -142,15 +144,22 @@ func CompareNotes(notes []*Note, threshold float64) *speechpb.SpeechContext {
 		}
 	}
 
+	found := map[string]interface{}{}
 	for _, not := range notConfident {
 		for _, is := range confident {
 			for soundex, notWord := range not.SoundexMap {
 				if word, ok := is.SoundexMap[soundex]; ok {
 					log.Printf("Better match found: (%s, %s)\n", notWord.GetWord(), word.GetWord())
-					speechContext.Phrases = append(speechContext.Phrases, word.GetWord())
+					if _, exists := found[word.Word]; !exists {
+						found[word.Word] = nil
+					}
 				}
 			}
 		}
+	}
+
+	for word := range found {
+		speechContext.Phrases = append(speechContext.Phrases, word)
 	}
 
 	return speechContext
