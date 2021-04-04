@@ -141,8 +141,6 @@ github.com/hashicorp/golang-lru v0.5.0/go.mod h1:/m3WP610KZHVQ1SGc6re/UDhFvYD7pJ
 github.com/hashicorp/golang-lru v0.5.1/go.mod h1:/m3WP610KZHVQ1SGc6re/UDhFvYD7pJ4Ao+sR/qLZy8=
 github.com/ianlancetaylor/demangle v0.0.0-20181102032728-5e5cf60278f6/go.mod h1:aSSvb/t6k1mPoxDqO4vJh6VOCGPwU4O0C2/Eqndh1Sc=
 github.com/ianlancetaylor/demangle v0.0.0-20200824232613-28f6c0f3b639/go.mod h1:aSSvb/t6k1mPoxDqO4vJh6VOCGPwU4O0C2/Eqndh1Sc=
-github.com/jfbus/mp4 v0.0.0-20150401112544-b5bc0819ce33 h1:kILV+1cj3LR7DXER9dpNaVE1HgZeFl8hSAwGo7qxfOg=
-github.com/jfbus/mp4 v0.0.0-20150401112544-b5bc0819ce33/go.mod h1:ZwFibYMKdoDBbujz3YfW9u/HUB41VuUfRZwiVKHp19c=
 github.com/jstemmer/go-junit-report v0.0.0-20190106144839-af01ea7f8024/go.mod h1:6v2b51hI/fHJwM22ozAgKL4VKDeJcHhJFhtBdhmNjmU=
 github.com/jstemmer/go-junit-report v0.9.1 h1:6QPYqodiu3GuPL+7mfx+NwDdp2eTkp9IfEUpgAwUN0o=
 github.com/jstemmer/go-junit-report v0.9.1/go.mod h1:Brl9GWCQeLvo8nXZwPNNblvFj/XSXhF0NWZEnDohbsk=
@@ -165,6 +163,8 @@ github.com/stretchr/testify v1.4.0/go.mod h1:j7eGeouHqKxXV5pUuKE4zz7dFj8WfuZ+81P
 github.com/stretchr/testify v1.5.1/go.mod h1:5W2xD1RspED5o8YsWQXVCued0rvSQ+mT+I5cxcmMvtA=
 github.com/stretchr/testify v1.6.1 h1:hDPOHmpOpP40lSULcqw7IrRb/u7w6RpDC9399XyoNd0=
 github.com/stretchr/testify v1.6.1/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
+github.com/umahmood/soundex v0.0.0-20200613124646-2a2ad9acb249 h1:3uI/LwkT0Ei3CnhXmqW9d0uGyhIH3ZNkmikeKJJQtbQ=
+github.com/umahmood/soundex v0.0.0-20200613124646-2a2ad9acb249/go.mod h1:afZClUWP/jSPP6jNOZtDexzrZKkaI6QmPNQ3EN27KvI=
 github.com/vbauerster/mpb/v5 v5.2.4 h1:PLP8vv75RcEgxGoJVtKaRD2FHSxEmIV/u4ZuOrfO8Qg=
 github.com/vbauerster/mpb/v5 v5.2.4/go.mod h1:K4iCHQp5sWnmAgEn+uW1sAxSilctb4JPAGXx49jV+Aw=
 github.com/yuin/goldmark v1.1.25/go.mod h1:3hX8gzYuyVAZsxl0MRgGTJEmQBFcNTphYh9decYSb74=

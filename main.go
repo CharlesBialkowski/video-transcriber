@@ -13,6 +13,7 @@ import (
 	"time"
 
 	youtube "github.com/kkdai/youtube"
+	"github.com/umahmood/soundex"
 
 	speech "cloud.google.com/go/speech/apiv1"
 	"cloud.google.com/go/storage"
@@ -20,8 +21,16 @@ import (
 )
 
 type Phrase struct {
+	SoundexMap map[string]*speechpb.WordInfo
+	Words      []*speechpb.WordInfo
 	Transcript string
 	Time       float64
+	Confidence float64
+}
+
+type Note struct {
+	Title   string
+	Results []Phrase
 }
 
 func main() {
@@ -29,57 +38,129 @@ func main() {
 	os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "video-transcriber-309519-d926d8f680de.json")
 
 	vIDs := []string{}
-	gsURIs := []string{}
 	f, _ := os.Open("./vIDs")
 	defer f.Close()
-
-	o, err := os.OpenFile("./results", os.O_RDWR, os.ModeAppend)
-	if err != nil {
-		log.Fatal(err.Error())
-	}
-	defer o.Close()
 
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		vIDs = append(vIDs, scanner.Text())
 	}
 
-	paths := RetrieveAudioFromVideos(vIDs)
-	for _, v := range paths {
-		gsURI, err := UploadAudioToCloud(v)
-		if err != nil {
-			log.Fatal(err.Error())
-		}
-		gsURIs = append(gsURIs, gsURI)
+	speechContext := &speechpb.SpeechContext{Phrases: []string{}}
+	notes := []*Note{}
+	for _, v := range vIDs {
+		path, title := DownloadFLAC(v)
+		gsURI, _ := UploadAudio(path)
+		response := Recognize(gsURI, speechContext)
+		note := CreateNote(response, title)
+		notes = append(notes, note)
+		speechContext = CompareNotes(notes, .90)
 	}
 
-	results := []Phrase{}
-	for _, v := range gsURIs {
-		resp := ParseAudio(v)
-		for _, v := range resp.GetResults() {
-			highestConfidence := &speechpb.SpeechRecognitionAlternative{Confidence: 0}
-			for _, alts := range v.GetAlternatives() {
-				if alts.Confidence > highestConfidence.Confidence {
-					highestConfidence = alts
+	for _, v := range notes {
+		WriteNote(v)
+	}
+}
+
+func CreateNote(response *speechpb.LongRunningRecognizeResponse, title string) *Note {
+
+	note := &Note{
+		Title:   title,
+		Results: []Phrase{},
+	}
+
+	for _, result := range response.GetResults() {
+
+		mostConfidentAlternative := &speechpb.SpeechRecognitionAlternative{Confidence: 0}
+		for _, alts := range result.GetAlternatives() {
+			if alts.Confidence > mostConfidentAlternative.Confidence {
+				mostConfidentAlternative = alts
+			}
+		}
+
+		sort.Slice(mostConfidentAlternative.Words, func(i, j int) bool {
+			return mostConfidentAlternative.Words[i].StartTime.Seconds < mostConfidentAlternative.Words[j].StartTime.Seconds
+		})
+
+		note.Results = append(note.Results, Phrase{
+			Transcript: mostConfidentAlternative.Transcript,
+			Time:       mostConfidentAlternative.Words[0].GetStartTime().AsDuration().Seconds(),
+			Confidence: float64(mostConfidentAlternative.Confidence),
+			Words:      mostConfidentAlternative.Words,
+		})
+
+	}
+
+	sort.Slice(note.Results, func(i, j int) bool {
+		return note.Results[i].Time < note.Results[j].Time
+	})
+
+	for _, phrase := range note.Results {
+		for _, word := range phrase.Words {
+			phrase.SoundexMap[soundex.Code(word.GetWord())] = word
+		}
+	}
+
+	return note
+}
+
+func WriteNote(note *Note) {
+	log.Printf("Writing note %s ...", note.Title)
+	defer log.Printf("Done!\n\n----------------------\n\n")
+
+	fileName := fmt.Sprintf("./results/%s", note.Title)
+
+	o, err := os.OpenFile(fileName, os.O_CREATE, os.ModeAppend)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+	defer o.Close()
+
+	o.WriteString(note.Title)
+	o.WriteString("\n-------------------------------------\n")
+
+	for _, v := range note.Results {
+		o.WriteString(fmt.Sprintf("%s\n", v.Transcript))
+	}
+}
+
+func CompareNotes(notes []*Note, threshold float64) *speechpb.SpeechContext {
+
+	log.Printf("Comparing existing notes ...")
+	defer log.Printf("Done!\n\n----------------------\n\n")
+
+	speechContext := &speechpb.SpeechContext{Phrases: []string{}}
+	notConfident := []Phrase{}
+	confident := []Phrase{}
+	for _, note := range notes {
+		for _, phrase := range note.Results {
+			if phrase.Confidence < threshold {
+				notConfident = append(notConfident, phrase)
+			} else {
+				confident = append(confident, phrase)
+			}
+		}
+	}
+
+	for _, not := range notConfident {
+		for _, is := range confident {
+			for soundex, notWord := range not.SoundexMap {
+				if word, ok := is.SoundexMap[soundex]; ok {
+					log.Printf("Better match found: (%s, %s)\n", notWord.GetWord(), word.GetWord())
+					speechContext.Phrases = append(speechContext.Phrases, word.GetWord())
 				}
 			}
-			sort.Slice(highestConfidence.Words, func(i, j int) bool {
-				return highestConfidence.Words[i].StartTime.Seconds < highestConfidence.Words[j].StartTime.Seconds
-			})
-			results = append(results, Phrase{Transcript: highestConfidence.Transcript, Time: highestConfidence.Words[0].StartTime.AsDuration().Seconds()})
 		}
-		sort.Slice(results, func(i, j int) bool {
-			return results[i].Time < results[j].Time
-		})
-		for _, v := range results {
-			o.WriteString(fmt.Sprintf("%s\n", v.Transcript))
-		}
-		o.WriteString("\n-------------------------------------\n")
 	}
+
+	return speechContext
 
 }
 
-func ParseAudio(fileURI string) *speechpb.LongRunningRecognizeResponse {
+func Recognize(fileURI string, speechContext *speechpb.SpeechContext) *speechpb.LongRunningRecognizeResponse {
+	log.Printf("Sending audio to Google STT ...")
+	defer log.Printf("Done!\n\n----------------------\n\n")
+
 	ctx := context.Background()
 
 	client, err := speech.NewClient(ctx)
@@ -95,15 +176,7 @@ func ParseAudio(fileURI string) *speechpb.LongRunningRecognizeResponse {
 			AudioChannelCount:          1,
 			EnableAutomaticPunctuation: true,
 			EnableWordTimeOffsets:      true,
-			SpeechContexts: []*speechpb.SpeechContext{
-				&speechpb.SpeechContext{
-					Phrases: []string{
-						"Plato", "Aristotle", "Moral", "Ethical", "ethics",
-						"philosophy", "principles", "friends", "friend", "kant", "natural",
-						"forms",
-					},
-				},
-			},
+			SpeechContexts:             []*speechpb.SpeechContext{speechContext},
 		},
 		Audio: &speechpb.RecognitionAudio{
 			AudioSource: &speechpb.RecognitionAudio_Uri{
@@ -125,24 +198,24 @@ func ParseAudio(fileURI string) *speechpb.LongRunningRecognizeResponse {
 
 }
 
-func RetrieveAudioFromVideos(uris []string) []string {
-	filePaths := []string{}
-	for _, vID := range uris {
-		y := youtube.NewYoutube(true, false)
-		y.DecodeURL(vID)
-		title := strings.ReplaceAll(y.Title, " ", "")
-		if err := y.StartDownload("./static", fmt.Sprintf("%s.mp4", title), "", 0); err != nil {
-			fmt.Println(y.Title)
-		}
-		exec.Command("ffmpeg", "-i", fmt.Sprintf("./static/%s.mp4", title), fmt.Sprintf("./static/%s.flac", title)).Run()
-		filePaths = append(filePaths, fmt.Sprintf("./static/%s.flac", title))
+func DownloadFLAC(uri string) (string, string) {
+	log.Printf("Retrieving Audio File ...")
+	defer log.Printf("Done!\n\n----------------------\n\n")
 
+	y := youtube.NewYoutube(true, false)
+	y.DecodeURL(uri)
+	title := strings.ReplaceAll(y.Title, " ", "")
+	if err := y.StartDownload("./static", fmt.Sprintf("%s.mp4", title), "", 0); err != nil {
+		fmt.Println(y.Title)
 	}
-
-	return filePaths
+	exec.Command("ffmpeg", "-i", fmt.Sprintf("./static/%s.mp4", title), fmt.Sprintf("./static/%s.flac", title)).Run()
+	return fmt.Sprintf("./static/%s.flac", title), y.Title
 }
 
-func UploadAudioToCloud(path string) (string, error) {
+func UploadAudio(path string) (string, error) {
+	log.Printf("Uploading to cloud storage for analysis ...")
+	defer log.Printf("Done!\n\n----------------------\n\n")
+
 	ctx := context.Background()
 	client, err := storage.NewClient(ctx)
 	if err != nil {
@@ -156,7 +229,7 @@ func UploadAudioToCloud(path string) (string, error) {
 	}
 	defer f.Close()
 
-	ctx, cancel := context.WithTimeout(ctx, time.Second*60)
+	ctx, cancel := context.WithTimeout(ctx, time.Minute*5)
 	defer cancel()
 
 	wc := client.Bucket("gs-transcriber-audio-files").Object(strings.Split(path, "/")[2]).NewWriter(ctx)
