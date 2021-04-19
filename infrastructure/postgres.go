@@ -35,6 +35,8 @@ func Connect(ctx context.Context) (db *gorm.DB, err error) {
 
 func CreateTables(db *gorm.DB) error {
 	err := db.AutoMigrate(
+		&domain.Phrase{},
+		&domain.Note{},
 		&domain.Profile{},
 		&domain.Notification{})
 

@@ -15,17 +15,14 @@ import (
 	"video-transcriber/domain"
 	"video-transcriber/infrastructure"
 
-	"github.com/Azure/azure-storage-blob-go/azblob"
-	az "github.com/Azure/azure-storage-blob-go/azblob"
 	"github.com/julienschmidt/httprouter"
 	"github.com/rs/zerolog/log"
 	"gorm.io/gorm"
 )
 
 type Server struct {
-	Db            *gorm.DB
-	Router        httprouter.Router
-	AZCredentials *az.SharedKeyCredential
+	Db     *gorm.DB
+	Router httprouter.Router
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -53,8 +50,6 @@ func Init() *Server {
 	router := server.Routes()
 
 	server.Router = *router
-
-	server.AZCredentials, _ = azblob.NewSharedKeyCredential(os.Getenv("STORAGE_ACCOUNT_NAME"), os.Getenv("STORAGE_ACCOUNT_KEY"))
 
 	return server
 

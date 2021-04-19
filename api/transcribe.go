@@ -51,27 +51,42 @@ func (s *Server) HandleTranscribeRequest() httprouter.Handle {
 				Process:   "transcribe_request",
 				Content:   fmt.Sprintf(`{"links_total": , "links_done": , "current_link": }`),
 			}, []uint{requester}, *r)
-			path, title := s.DownloadFLAC(v, requester)
-			gsURI, _ := s.UploadAudio(path)
-			response := s.Recognize(gsURI, speechContext)
-			note := s.CreateNote(response, title)
+			path, title := s.DownloadFLAC(v, requester, r)
+			gsURI, _ := s.UploadAudio(path, requester, r)
+			response := s.Recognize(gsURI, speechContext, requester, r)
+			note := s.CreateNote(response, title, requester, r)
 			notes = append(notes, note)
-			speechContext = s.CompareNotes(notes, input.ComparisonThreshold)
+			speechContext = s.CompareNotes(notes, input.ComparisonThreshold, requester, r)
 		}
 
 		for _, v := range notes {
-			s.WriteNote(v)
+			v.ProfileID = requester
+			s.Db.Create(v)
 		}
 
 	}
 }
 
-func (s *Server) CreateNote(response *speechpb.LongRunningRecognizeResponse, title string) *domain.Note {
+func (s *Server) CreateNote(response *speechpb.LongRunningRecognizeResponse, title string, requester uint, r *http.Request) *domain.Note {
 
 	note := &domain.Note{
 		Title:   title,
-		Results: []*domain.Phrase{},
+		Phrases: []domain.Phrase{},
 	}
+
+	s.SendNotifications(domain.Notification{
+		ProfileID: requester,
+		CreatedAt: time.Now(),
+		Process:   "create_note",
+		Content:   fmt.Sprintf(`{"title": }`),
+	}, []uint{requester}, *r)
+
+	defer s.SendNotifications(domain.Notification{
+		ProfileID: requester,
+		CreatedAt: time.Now(),
+		Process:   "create_note_done",
+		Content:   fmt.Sprintf(`{"title": }`),
+	}, []uint{requester}, *r)
 
 	for _, result := range response.GetResults() {
 
@@ -86,7 +101,7 @@ func (s *Server) CreateNote(response *speechpb.LongRunningRecognizeResponse, tit
 			return mostConfidentAlternative.Words[i].StartTime.Seconds < mostConfidentAlternative.Words[j].StartTime.Seconds
 		})
 
-		note.Results = append(note.Results, &domain.Phrase{
+		note.Phrases = append(note.Phrases, domain.Phrase{
 			Transcript: mostConfidentAlternative.Transcript,
 			Time:       mostConfidentAlternative.Words[0].GetStartTime().AsDuration().Seconds(),
 			Confidence: float64(mostConfidentAlternative.Confidence),
@@ -95,24 +110,34 @@ func (s *Server) CreateNote(response *speechpb.LongRunningRecognizeResponse, tit
 
 	}
 
-	sort.Slice(note.Results, func(i, j int) bool {
-		return note.Results[i].Time < note.Results[j].Time
+	sort.Slice(note.Phrases, func(i, j int) bool {
+		return note.Phrases[i].Time < note.Phrases[j].Time
 	})
 
-	for _, phrase := range note.Results {
+	for _, phrase := range note.Phrases {
 		phrase.SoundexMap = make(map[string]*speechpb.WordInfo, 0)
 		for _, word := range phrase.Words {
 			phrase.SoundexMap[soundex.Code(word.GetWord())] = word
 		}
-		log.Printf("%v\v", phrase.SoundexMap)
 	}
 
 	return note
 }
 
-func (s *Server) WriteNote(note *domain.Note) {
-	log.Printf("Writing note %s ...", note.Title)
-	defer log.Printf("Done!\n\n----------------------\n\n")
+func (s *Server) WriteNote(note *domain.Note, requester uint, r *http.Request) {
+	s.SendNotifications(domain.Notification{
+		ProfileID: requester,
+		CreatedAt: time.Now(),
+		Process:   "write_note",
+		Content:   fmt.Sprintf(`{"title": "%s"}`, note.Title),
+	}, []uint{requester}, *r)
+
+	defer s.SendNotifications(domain.Notification{
+		ProfileID: requester,
+		CreatedAt: time.Now(),
+		Process:   "write_note_done",
+		Content:   fmt.Sprintf(`{"title": %s}`, note.Title),
+	}, []uint{requester}, *r)
 
 	fileName := fmt.Sprintf("./results/%s", note.Title)
 
@@ -125,21 +150,18 @@ func (s *Server) WriteNote(note *domain.Note) {
 	o.WriteString(note.Title)
 	o.WriteString("\n-------------------------------------\n")
 
-	for _, v := range note.Results {
+	for _, v := range note.Phrases {
 		o.WriteString(fmt.Sprintf("%s\n", v.Transcript))
 	}
 }
 
-func (s *Server) CompareNotes(notes []*domain.Note, threshold float64) *speechpb.SpeechContext {
-
-	log.Printf("Comparing existing notes ...")
-	defer log.Printf("Done!\n\n----------------------\n\n")
+func (s *Server) CompareNotes(notes []*domain.Note, threshold float64, requester uint, r *http.Request) *speechpb.SpeechContext {
 
 	speechContext := &speechpb.SpeechContext{Phrases: []string{}}
-	notConfident := []*domain.Phrase{}
-	confident := []*domain.Phrase{}
+	notConfident := []domain.Phrase{}
+	confident := []domain.Phrase{}
 	for _, note := range notes {
-		for _, phrase := range note.Results {
+		for _, phrase := range note.Phrases {
 			if phrase.Confidence < threshold {
 				notConfident = append(notConfident, phrase)
 			} else {
@@ -151,9 +173,8 @@ func (s *Server) CompareNotes(notes []*domain.Note, threshold float64) *speechpb
 	found := map[string]interface{}{}
 	for _, not := range notConfident {
 		for _, is := range confident {
-			for soundex, notWord := range not.SoundexMap {
+			for soundex := range not.SoundexMap {
 				if word, ok := is.SoundexMap[soundex]; ok {
-					log.Printf("Better match found: (%s, %s)\n", notWord.GetWord(), word.GetWord())
 					if _, exists := found[word.Word]; !exists {
 						found[word.Word] = nil
 					}
@@ -170,9 +191,20 @@ func (s *Server) CompareNotes(notes []*domain.Note, threshold float64) *speechpb
 
 }
 
-func (s *Server) Recognize(fileURI string, speechContext *speechpb.SpeechContext) *speechpb.LongRunningRecognizeResponse {
-	log.Printf("Sending audio to Google STT ...")
-	defer log.Printf("Done!\n\n----------------------\n\n")
+func (s *Server) Recognize(fileURI string, speechContext *speechpb.SpeechContext, requester uint, r *http.Request) *speechpb.LongRunningRecognizeResponse {
+	s.SendNotifications(domain.Notification{
+		ProfileID: requester,
+		CreatedAt: time.Now(),
+		Process:   "recognize",
+		Content:   fmt.Sprintf(`{"title": "%s"}`, fileURI),
+	}, []uint{requester}, *r)
+
+	defer s.SendNotifications(domain.Notification{
+		ProfileID: requester,
+		CreatedAt: time.Now(),
+		Process:   "recognize_done",
+		Content:   fmt.Sprintf(`{"title": "%s"}`, fileURI),
+	}, []uint{requester}, *r)
 
 	ctx := context.Background()
 
@@ -199,21 +231,35 @@ func (s *Server) Recognize(fileURI string, speechContext *speechpb.SpeechContext
 	}
 	op, err := client.LongRunningRecognize(ctx, req)
 	if err != nil {
-		fmt.Println(err.Error())
+		req.Config.AudioChannelCount = 2
+		op, _ = client.LongRunningRecognize(ctx, req)
 	}
 
 	resp, err := op.Wait(ctx)
 	if err != nil {
-		fmt.Println(err.Error())
+		req.Config.AudioChannelCount = 2
+		op, _ = client.LongRunningRecognize(ctx, req)
+		resp, _ = op.Wait(ctx)
 	}
 
 	return resp
 
 }
 
-func (s *Server) DownloadFLAC(uri string, requester uint) (string, string) {
-	log.Printf("Retrieving Audio File ...")
-	defer log.Printf("Done!\n\n----------------------\n\n")
+func (s *Server) DownloadFLAC(uri string, requester uint, r *http.Request) (string, string) {
+	s.SendNotifications(domain.Notification{
+		ProfileID: requester,
+		CreatedAt: time.Now(),
+		Process:   "get_audio",
+		Content:   fmt.Sprintf(`{"uri": }`),
+	}, []uint{requester}, *r)
+
+	defer s.SendNotifications(domain.Notification{
+		ProfileID: requester,
+		CreatedAt: time.Now(),
+		Process:   "get_audio_done",
+		Content:   fmt.Sprintf(`{"uri": }`),
+	}, []uint{requester}, *r)
 
 	y := youtube.NewYoutube(true, false)
 	y.DecodeURL(uri)
@@ -225,9 +271,20 @@ func (s *Server) DownloadFLAC(uri string, requester uint) (string, string) {
 	return fmt.Sprintf("./static/%s.flac", title), y.Title
 }
 
-func (s *Server) UploadAudio(path string) (string, error) {
-	log.Printf("Uploading to cloud storage for analysis ...")
-	defer log.Printf("Done!\n\n----------------------\n\n")
+func (s *Server) UploadAudio(path string, requester uint, r *http.Request) (string, error) {
+	s.SendNotifications(domain.Notification{
+		ProfileID: requester,
+		CreatedAt: time.Now(),
+		Process:   "upload_audio",
+		Content:   fmt.Sprintf(``),
+	}, []uint{requester}, *r)
+
+	defer s.SendNotifications(domain.Notification{
+		ProfileID: requester,
+		CreatedAt: time.Now(),
+		Process:   "upload_audio_done",
+		Content:   fmt.Sprintf(``),
+	}, []uint{requester}, *r)
 
 	ctx := context.Background()
 	client, err := storage.NewClient(ctx)

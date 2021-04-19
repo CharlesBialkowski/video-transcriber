@@ -1,6 +1,11 @@
 package domain
 
 type Note struct {
+	ID uint
+
+	Profile   Profile
+	ProfileID uint
+
 	Title   string
-	Results []*Phrase
+	Phrases []Phrase
 }
